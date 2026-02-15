@@ -64,33 +64,52 @@ class UniversalFinancialStreamer:
             row_str = f"{row_id}<x:{base_x:03d}> "
             
             for w in row:
-                text = self._normalize_text(w['text'])
+                # --- 【変更点】正規化のタイミングを変更 ---
+                # 元のテキストを保持しつつ、判定とID付与を行う
+                raw_text = w['text']
                 col_idx = self._get_col_index(w['x0'], col_baselines)
                 
-                # 数値かどうか判定してIDを振る（ここでマスキング判定）
-                tagged_text = self._apply_value_id(text)
+                # 数値候補かどうか判定してIDを振る
+                tagged_text = self._apply_value_id(raw_text)
                 
                 row_str += f"<col:{col_idx}, x:{int(w['x0']):03d}> {tagged_text} "
             lines.append(row_str)
 
         return "\n".join(lines), col_baselines
 
+    # --- 【新規・変更点】数値可能性の最大抽出ロジック ---
+    def _is_numeric_candidate(self, text):
+        """数字（全角・半角）または特定の通貨・計算記号が含まれているか判定"""
+        has_digit = any(char.isdigit() for char in text)
+        has_currency_sym = any(char in "△▲¥$€%.," for char in text)
+        return has_digit or has_currency_sym
+
+    def _mask_text(self, text):
+        """数値を 'x' に置換しつつ、単位や記号（兆、円、％、△等）を保護する"""
+        # 半角・全角数字をすべて 'x' に置換
+        masked = re.sub(r'[0-9０-９]', 'x', text)
+        return masked
+
     def _apply_value_id(self, text):
-        """数値データ（整数・小数・負数）にIDを付与、またはマスキングする"""
-        clean_val = text.strip()
+        """数値可能性のあるトークンにIDを付与。必要に応じてマスキングを適用"""
+        clean_text = text.strip()
         
-        # 正規表現で数値判定
-        if re.fullmatch(r'-?\d+(\.\d+)?', clean_val):
+        # Python側で断定せず、候補であればすべて <v_id:XXX> 化する
+        if self._is_numeric_candidate(clean_text):
             self.val_counter += 1
             v_id = f"v_{self.val_counter:03d}"
             
-            # --- ここで切り替え ---
+            # 内部的な「計算用正規化」は行わず、AIに渡す文字列を作成
+            display_text = clean_text.replace(',', '') 
+            
             if self.mask_numbers:
-                return f"<{v_id}:NUMERIC>"
+                # マスキング時は単位を維持した xxx 表記
+                masked_val = self._mask_text(display_text)
+                return f"<{v_id}:{masked_val}>"
             else:
-                return f"<{v_id}:{clean_val}>"
+                return f"<{v_id}:{display_text}>"
         
-        return clean_val
+        return clean_text
 
     def _cluster_coordinates(self, coords):
         if not coords: return []
@@ -107,19 +126,18 @@ class UniversalFinancialStreamer:
                 return i + 1
         return 1
 
+    # _normalize_text は _apply_value_id 内に統合されたため廃止可能ですが、
+    # 互換性のため、あるいはシンプルな前処理が必要な場合のために最小限で残します。
     def _normalize_text(self, text):
-        t = text.replace('△', '-').replace('▲', '-').replace(',', '')
-        if re.fullmatch(r'\(\d+\.?\d*\)', t):
-            t = '-' + t[1:-1]
-        return t
+        return text.replace(',', '')
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Financial Col-Tagging Tester", layout="wide")
+st.set_page_config(page_title="Financial ID-Tagging Tester", layout="wide")
 
-st.title("📑 Dynamic Col-Tagging Tester")
+st.title("📑 Universal Financial Streamer")
 st.markdown("""
-このツールは、PDF内のテキスト座標をスキャンし、**列構造を自動特定**します。
-サイドバーの「数値をマスキングする」をオンにすると、機密性の高い数値を隠して構造のみを出力できます。
+このツールは、PDF内の座標から**「幾何学的構造（列）」**と**「論理的構造（ID）」**を抽出します。
+数値可能性のあるトークンはすべて `v_id` が付与され、AIによる解釈を助けます。
 """)
 
 # サイドバーの設定
@@ -127,17 +145,16 @@ st.sidebar.header("Tuning Parameters")
 x_tol = st.sidebar.slider("X Tolerance (列の結合感度)", 1, 100, 20, help="この範囲内のx座標は同じ列として扱われます。")
 y_tol = st.sidebar.slider("Y Tolerance (行の結合感度)", 1, 20, 11, help="この範囲内のy座標は同じ行として扱われます。")
 
-# ★ マスキング切り替えスイッチの追加
+# マスキング切り替えスイッチ
 mask_on = st.sidebar.checkbox(
-    "数値をマスキングする", 
+    "数値をマスキングする (xxx置換)", 
     value=False, 
-    help="ONにすると数値が <v_ID:NUMERIC> に置き換わります。"
+    help="ONにすると <v_id:1,234円> が <v_id:x,xxx円> のように置換されます。"
 )
 
 uploaded_file = st.file_uploader("決算短信（PDF）をアップロード", type="pdf")
 
 if uploaded_file:
-    # クラス初期化時に mask_numbers 引数を渡す
     streamer = UniversalFinancialStreamer(
         x_tolerance=x_tol, 
         y_tolerance=y_tol, 
@@ -151,4 +168,4 @@ if uploaded_file:
     st.text_area("AI用入力データ形式", output, height=700)
     
     if "Detected" in output:
-        st.sidebar.success("列解析完了")
+        st.sidebar.success("解析完了")
