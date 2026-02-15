@@ -89,27 +89,33 @@ class UniversalFinancialStreamer:
         # 半角・全角数字をすべて 'x' に置換
         masked = re.sub(r'[0-9０-９]', 'x', text)
         return masked
-
+    
     def _apply_value_id(self, text):
-        """数値可能性のあるトークンにIDを付与。必要に応じてマスキングを適用"""
-        clean_text = text.strip()
-        
-        # Python側で断定せず、候補であればすべて <v_id:XXX> 化する
-        if self._is_numeric_candidate(clean_text):
+        """
+        トークン内の数値部分(2,589)だけを見つけ出し、
+        ID化(<v_001:2589>)して、前後の文字(億円となり、)はそのまま残す。
+        """
+        # 数値（カンマ、小数点、前置の△▲、後続の%を含む）を抽出する正規表現
+        # 兆、億、万などの漢字単位はあえてAIに解釈させるため抽出対象から外す（外側に残す）
+        num_pattern = r'[△▲-]?[0-9０-９,，.．]+%?'
+
+        def replace_match(match):
+            raw_num = match.group(0)
             self.val_counter += 1
             v_id = f"v_{self.val_counter:03d}"
             
-            # 内部的な「計算用正規化」は行わず、AIに渡す文字列を作成
-            display_text = clean_text.replace(',', '') 
+            # 計算の邪魔になるカンマを消去
+            val_for_ai = raw_num.replace(',', '').replace('，', '')
             
             if self.mask_numbers:
-                # マスキング時は単位を維持した xxx 表記
-                masked_val = self._mask_text(display_text)
+                # マスキング時は数値部分のみを x に
+                masked_val = self._mask_text(val_for_ai)
                 return f"<{v_id}:{masked_val}>"
             else:
-                return f"<{v_id}:{display_text}>"
-        
-        return clean_text
+                return f"<{v_id}:{val_for_ai}>"
+
+        # テキスト内の数値部分だけを置換
+        return re.sub(num_pattern, replace_match, text)
 
     def _cluster_coordinates(self, coords):
         if not coords: return []
