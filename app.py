@@ -4,9 +4,10 @@ import pandas as pd
 import re
 
 class UniversalFinancialStreamer:
-    def __init__(self, x_tolerance=20, y_tolerance=11):
+    def __init__(self, x_tolerance=20, y_tolerance=11, mask_numbers=False):
         self.x_tolerance = x_tolerance
         self.y_tolerance = y_tolerance
+        self.mask_numbers = mask_numbers  # 数値を隠すかどうかのフラグ
         # 全ページ通してのIDカウンター
         self.row_counter = 0
         self.val_counter = 0
@@ -27,7 +28,7 @@ class UniversalFinancialStreamer:
 
                 page_stream, baselines = self._generate_page_stream(words)
                 
-                # StreamlitのUI側に「特定された列数」を表示するための情報を付与
+                # StreamlitのUI側に情報を付与
                 header = f"=== PAGE {i+1} [Detected {len(baselines)} Columns] ==="
                 full_output.append(f"{header}\n{page_stream}")
         return "\n\n".join(full_output)
@@ -48,11 +49,11 @@ class UniversalFinancialStreamer:
                 last_y = w['top']
         rows.append(current_row)
 
-        # 2. X軸の基準線（列）を動的に特定（最重要ロジック）
+        # 2. X軸の基準線（列）を動的に特定
         all_x_starts = [w['x0'] for row in rows for w in row]
         col_baselines = self._cluster_coordinates(all_x_starts)
 
-        # 3. ストリーム形式に変換（colタグを付与）
+        # 3. ストリーム形式に変換
         lines = []
         for row in rows:
             if not row: continue
@@ -64,10 +65,9 @@ class UniversalFinancialStreamer:
             
             for w in row:
                 text = self._normalize_text(w['text'])
-                # その単語がどの列（baseline）に属するか判定
                 col_idx = self._get_col_index(w['x0'], col_baselines)
                 
-                # 数値かどうか判定してIDを振る
+                # 数値かどうか判定してIDを振る（ここでマスキング判定）
                 tagged_text = self._apply_value_id(text)
                 
                 row_str += f"<col:{col_idx}, x:{int(w['x0']):03d}> {tagged_text} "
@@ -76,15 +76,20 @@ class UniversalFinancialStreamer:
         return "\n".join(lines), col_baselines
 
     def _apply_value_id(self, text):
-        """数値データ（整数・小数・負数）にIDを付与する"""
-        # 正規表現: 記号を除去した後の純粋な数値パターン
-        # -? \d+ (\. \d+)?  (例: 100, -50.5, 0.12)
+        """数値データ（整数・小数・負数）にIDを付与、またはマスキングする"""
         clean_val = text.strip()
         
-        # 数値として解釈可能な場合
+        # 正規表現で数値判定
         if re.fullmatch(r'-?\d+(\.\d+)?', clean_val):
             self.val_counter += 1
-            return f"<v_{self.val_counter:03d}:{clean_val}>"
+            v_id = f"v_{self.val_counter:03d}"
+            
+            # --- ここで切り替え ---
+            if self.mask_numbers:
+                return f"<{v_id}:NUMERIC>"
+            else:
+                return f"<{v_id}:{clean_val}>"
+        
         return clean_val
 
     def _cluster_coordinates(self, coords):
@@ -92,21 +97,18 @@ class UniversalFinancialStreamer:
         coords.sort()
         clusters = [coords[0]]
         for c in coords[1:]:
-            # 設定した x_tolerance を超える隙間があれば「新しい列」とみなす
             if c > clusters[-1] + self.x_tolerance:
                 clusters.append(c)
         return clusters
 
     def _get_col_index(self, x, baselines):
         for i, b in enumerate(baselines):
-            # 最も近い基準線を探す
             if abs(x - b) <= self.x_tolerance:
                 return i + 1
         return 1
 
     def _normalize_text(self, text):
         t = text.replace('△', '-').replace('▲', '-').replace(',', '')
-        # 括弧負数 (100) -> -100
         if re.fullmatch(r'\(\d+\.?\d*\)', t):
             t = '-' + t[1:-1]
         return t
@@ -116,23 +118,37 @@ st.set_page_config(page_title="Financial Col-Tagging Tester", layout="wide")
 
 st.title("📑 Dynamic Col-Tagging Tester")
 st.markdown("""
-このツールは、PDF内のテキスト座標をスキャンし、**ページごとに異なる列構造（基準線）を自動特定**します。
-これにより、複雑な持分変動計算書などでも「何列目のデータか」をAIが把握可能になります。
+このツールは、PDF内のテキスト座標をスキャンし、**列構造を自動特定**します。
+サイドバーの「数値をマスキングする」をオンにすると、機密性の高い数値を隠して構造のみを出力できます。
 """)
 
+# サイドバーの設定
 st.sidebar.header("Tuning Parameters")
 x_tol = st.sidebar.slider("X Tolerance (列の結合感度)", 1, 100, 20, help="この範囲内のx座標は同じ列として扱われます。")
 y_tol = st.sidebar.slider("Y Tolerance (行の結合感度)", 1, 20, 11, help="この範囲内のy座標は同じ行として扱われます。")
 
+# ★ マスキング切り替えスイッチの追加
+mask_on = st.sidebar.checkbox(
+    "数値をマスキングする", 
+    value=False, 
+    help="ONにすると数値が <v_ID:NUMERIC> に置き換わります。"
+)
+
 uploaded_file = st.file_uploader("決算短信（PDF）をアップロード", type="pdf")
 
 if uploaded_file:
-    streamer = UniversalFinancialStreamer(x_tolerance=x_tol, y_tolerance=y_tol)
-    output = streamer.process_pdf(uploaded_file)
+    # クラス初期化時に mask_numbers 引数を渡す
+    streamer = UniversalFinancialStreamer(
+        x_tolerance=x_tol, 
+        y_tolerance=y_tol, 
+        mask_numbers=mask_on
+    )
+    
+    with st.spinner("PDFを解析中..."):
+        output = streamer.process_pdf(uploaded_file)
     
     st.subheader("分析結果: 幾何学的ストリーム出力")
     st.text_area("AI用入力データ形式", output, height=700)
     
-    # ページごとの列検出数をサマリー表示
     if "Detected" in output:
         st.sidebar.success("列解析完了")
