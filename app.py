@@ -3,11 +3,16 @@ import pdfplumber
 import pandas as pd
 
 class UniversalFinancialStreamer:
-    def __init__(self, x_tolerance=10, y_tolerance=3):
+    def __init__(self, x_tolerance=10, y_tolerance=11):
         self.x_tolerance = x_tolerance
         self.y_tolerance = y_tolerance
+        # 全ページ通してのIDカウンター
+        self.row_counter = 0
+        self.val_counter = 0
 
     def process_pdf(self, pdf_file):
+        self.row_counter = 0  # 処理開始時にリセット
+        self.val_counter = 0
         full_output = []
         with pdfplumber.open(pdf_file) as pdf:
             for i, page in enumerate(pdf.pages):
@@ -50,18 +55,36 @@ class UniversalFinancialStreamer:
         lines = []
         for row in rows:
             if not row: continue
+            
+            self.row_counter += 1
+            row_id = f"[r_{self.row_counter:03d}]"
             base_x = int(row[0]['x0'])
-            # 行の先頭に基準となるx座標を付与
-            row_str = f"<x:{base_x:03d}> "
+            row_str = f"{row_id}<x:{base_x:03d}> "
             
             for w in row:
                 text = self._normalize_text(w['text'])
                 # その単語がどの列（baseline）に属するか判定
                 col_idx = self._get_col_index(w['x0'], col_baselines)
-                row_str += f"<col:{col_idx}, x:{int(w['x0']):03d}> {text} "
+                
+                # 数値かどうか判定してIDを振る
+                tagged_text = self._apply_value_id(text)
+                
+                row_str += f"<col:{col_idx}, x:{int(w['x0']):03d}> {tagged_text} "
             lines.append(row_str)
 
         return "\n".join(lines), col_baselines
+
+    def _apply_value_id(self, text):
+        """数値データ（整数・小数・負数）にIDを付与する"""
+        # 正規表現: 記号を除去した後の純粋な数値パターン
+        # -? \d+ (\. \d+)?  (例: 100, -50.5, 0.12)
+        clean_val = text.strip()
+        
+        # 数値として解釈可能な場合
+        if re.fullmatch(r'-?\d+(\.\d+)?', clean_val):
+            self.val_counter += 1
+            return f"<v_{self.val_counter:03d}:{clean_val}>"
+        return clean_val
 
     def _cluster_coordinates(self, coords):
         if not coords: return []
@@ -82,7 +105,8 @@ class UniversalFinancialStreamer:
 
     def _normalize_text(self, text):
         t = text.replace('△', '-').replace('▲', '-').replace(',', '')
-        if t.startswith('(') and t.endswith(')'):
+        # 括弧負数 (100) -> -100
+        if re.fullmatch(r'\(\d+\.?\d*\)', t):
             t = '-' + t[1:-1]
         return t
 
