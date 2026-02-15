@@ -1,6 +1,7 @@
 import streamlit as st
 import pdfplumber
 import pandas as pd
+import re
 
 class UniversalFinancialStreamer:
     def __init__(self, x_tolerance=10, y_tolerance=11):
