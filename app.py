@@ -4,7 +4,7 @@ import pandas as pd
 import re
 
 class UniversalFinancialStreamer:
-    def __init__(self, x_tolerance=10, y_tolerance=11):
+    def __init__(self, x_tolerance=20, y_tolerance=11):
         self.x_tolerance = x_tolerance
         self.y_tolerance = y_tolerance
         # 全ページ通してのIDカウンター
@@ -122,7 +122,7 @@ st.markdown("""
 
 st.sidebar.header("Tuning Parameters")
 x_tol = st.sidebar.slider("X Tolerance (列の結合感度)", 1, 100, 20, help="この範囲内のx座標は同じ列として扱われます。")
-y_tol = st.sidebar.slider("Y Tolerance (行の結合感度)", 1, 20, 3, help="この範囲内のy座標は同じ行として扱われます。")
+y_tol = st.sidebar.slider("Y Tolerance (行の結合感度)", 1, 20, 11, help="この範囲内のy座標は同じ行として扱われます。")
 
 uploaded_file = st.file_uploader("決算短信（PDF）をアップロード", type="pdf")
 
